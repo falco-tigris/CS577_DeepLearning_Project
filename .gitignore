@@ -5,3 +5,6 @@ data/*
 
 /__pycache__
 /models/__pycache__
+
+# Models
+vit-bert-pretrained/*
