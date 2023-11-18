@@ -6,9 +6,9 @@ from torchsummary import summary
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 class CNN(nn.Module):
-    def __init__(self):
+    def __init__(self, d_model):
         super(CNN, self).__init__()
-        self.conv1 = nn.Conv2d(1, 12, 3, 1, 1)
+        self.conv1 = nn.Conv2d(3, 12, 3, 1, 1)
         self.bn1 = nn.BatchNorm2d(12)
         self.poolAvg = nn.AvgPool2d(2, 2)
         self.conv2 = nn.Conv2d(12, 24, 3, 1, 1)
@@ -27,7 +27,7 @@ class CNN(nn.Module):
         self.bn8 = nn.BatchNorm2d(12)
         # Input size = 2048 -> 1024 -> 512 -> 256 -> 128 -> 64 -> 32 -> 16 -> 8
         self.fc1 = nn.Linear(768, 512)
-        self.fc2 = nn.Linear(512, 256)
+        self.fc2 = nn.Linear(512, d_model)
 
     def forward(self, x):
         x = x.float()
@@ -44,12 +44,11 @@ class CNN(nn.Module):
         x = self.fc2(x)
         return x
 
+# Modified version from: https://pytorch.org/tutorials/beginner/transformer_tutorial.html
 class PositionalEncoding(nn.Module):
     def __init__(self, dim_model, dropout_p, max_len):
         super().__init__()
-        # Modified version from: https://pytorch.org/tutorials/beginner/transformer_tutorial.html
-        # max_len determines how far the position can have an effect on a token (window)
-        # Info
+
         self.dropout = nn.Dropout(dropout_p)
         pos_encoding = torch.zeros(max_len, dim_model)
         positions_list = torch.arange(0, max_len, dtype=torch.float).view(-1, 1) # 0, 1, 2, 3, 4, 5
@@ -69,85 +68,69 @@ class PositionalEncoding(nn.Module):
         # Residual connection + pos encoding
         return self.dropout(token_embedding + self.pos_encoding[:token_embedding.size(0), :])
 
-class Transformer(nn.Module):
-    def __init__(
-        self,
-        num_tokens,
-        dim_model,
-        num_heads,
-        num_encoder_layers,
-        num_decoder_layers,
-        dropout_p,
-    ):
-        super().__init__()
-
+class DecoderGenerator(nn.Module):
+    def __init__(self, vocab_size, dim_model, num_heads, num_decoder_layers, dropout_p):
+        super(DecoderGenerator, self).__init__()
+        
         self.dim_model = dim_model
-
-        # LAYERS
-        self.positional_encoder = PositionalEncoding(
-            dim_model=dim_model, dropout_p=dropout_p, max_len=5000
+        self.emb = nn.Embedding(vocab_size, dim_model)
+        # max_len determines how far the position can have an effect on a token (window)
+        self.pos = PositionalEncoding(dim_model, dropout_p, max_len=5000)
+        self.decoder = nn.TransformerDecoder(
+            nn.TransformerDecoderLayer(
+                d_model=dim_model, nhead=num_heads, dropout=dropout_p, activation='gelu', 
+            ),
+            num_decoder_layers,
         )
-        self.embedding = nn.Embedding(num_tokens, dim_model)
-        self.transformer = nn.Transformer(
-            d_model=dim_model,
-            nhead=num_heads,
-            num_encoder_layers=num_encoder_layers,
-            num_decoder_layers=num_decoder_layers,
-            dropout=dropout_p,
+        self.dense = nn.Linear(dim_model, vocab_size)
+        self.softmax = nn.LogSoftmax(dim=-1)
+
+    def forward(self, tgt, tgt_mask, memory):
+        # tgt = (batch_size, tgt_seq_len)
+        # tgt_mask = (tgt_seq_len, tgt_seq_len)
+        # memory = (batch_size, src_seq_len, dim_model)
+        
+        # Embedding + positional encoding - 
+        tgt = self.emb(tgt) * np.sqrt(self.dim_model)
+        # Permute to obtain (tgt_seq_len, batch_size, dim_model)
+        tgt = torch.permute(tgt, (1, 0, 2))
+        tgt = self.pos(tgt)
+
+        # Transformer blocks - Out size = (tgt_seq_len, batch_size, dim_model)
+        out = self.decoder(tgt, memory, tgt_mask=tgt_mask) #memory_mask=memory_mask)
+        
+        # Dense layer - Out size = (tgt_seq_len, batch_size, vocab_size)
+        out = self.dense(out)      
+        return self.softmax(out)
+
+
+class ReportNet(nn.Module):
+    def __init__(self, vocab_size, emb_dim=200, max_len=60, dropout_p=0.4):
+        super(ReportNet, self).__init__()
+        self.max_len = max_len
+        self.encoder = CNN(emb_dim)
+        self.decoder = DecoderGenerator(
+            vocab_size=vocab_size,
+            dim_model=emb_dim,
+            num_heads=2,
+            num_decoder_layers=6,
+            dropout_p=dropout_p,
         )
-        self.out = nn.Linear(dim_model, num_tokens)
-        
-    def forward(self, src, tgt, tgt_mask=None, src_pad_mask=None, tgt_pad_mask=None):
-        # Src size must be (batch_size, src sequence length)
-        # Tgt size must be (batch_size, tgt sequence length)
 
-        # Embedding + positional encoding - Out size = (batch_size, sequence length, dim_model)
-        src = self.embedding(src) * np.sqrt(self.dim_model)
-        tgt = self.embedding(tgt) * np.sqrt(self.dim_model)
-        src = self.positional_encoder(src)
-        tgt = self.positional_encoder(tgt)
-        
-        # We could use the parameter batch_first=True, but our KDL version doesn't support it yet, so we permute
-        # to obtain size (sequence length, batch_size, dim_model),
-        src = src.permute(1,0,2)
-        tgt = tgt.permute(1,0,2)
-
-        # Transformer blocks - Out size = (sequence length, batch_size, num_tokens)
-        transformer_out = self.transformer(src, tgt, tgt_mask=tgt_mask, src_key_padding_mask=src_pad_mask, tgt_key_padding_mask=tgt_pad_mask)
-        out = self.out(transformer_out)
-        
-        return out
-      
+    def forward(self, image1, report):
+        # Extract features from images using CNN
+        image1_features = self.encoder(image1)
+        image1_features = image1_features.unsqueeze(0)
+        # Pass the image features and text through the transformer
+        tgt_mask = self.get_tgt_mask(len(report))
+        # Generate the report
+        transformer_output = self.decoder(report, tgt_mask, image1_features)
+        return transformer_output
+    
     def get_tgt_mask(self, size) -> torch.tensor:
         # Generates a squeare matrix where the each row allows one word more to be seen
         mask = torch.tril(torch.ones(size, size) == 1) # Lower triangular matrix
         mask = mask.float()
         mask = mask.masked_fill(mask == 0, float('-inf')) # Convert zeros to -inf
         mask = mask.masked_fill(mask == 1, float(0.0)) # Convert ones to 0
-        
         return mask
-    
-    def create_pad_mask(self, matrix: torch.tensor, pad_token: int) -> torch.tensor:
-        # If matrix = [1,2,3,0,0,0] where pad_token=0, the result mask is
-        # [False, False, False, True, True, True]
-        return (matrix == pad_token)
-
-    
-class ReportNet(nn.Module):
-    def __init__(self, vocab_size, emb_dim=200, hidden_dim=512):
-        super(ReportNet, self).__init__()
-        self.cnn = CNN()
-        self.embedding = nn.Embedding(vocab_size, emb_dim)
-        self.transformer = nn.Transformer(d_model=hidden_dim)
-        self.fc_out = nn.Linear(hidden_dim, vocab_size)
-
-    def forward(self, image1, report):
-        # Extract features from images using CNN
-        image1_features = self.cnn(image1)
-        # image2_features = self.cnn(image2)
-        # image_features = torch.cat((image1_features, image2_features), dim=1)
-        # Pass the image features and text through the transformer
-        transformer_output = self.transformer(image1_features.unsqueeze(0), tgt=report)
-        # Generate the report
-        report = self.fc_out(transformer_output)
-        return report
