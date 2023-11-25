@@ -1,0 +1,10 @@
+# All data
+# Add all data files from /data except the preprocessing.py
+data/*
+!data/preprocessing.py
+
+/__pycache__
+/models/__pycache__
+
+# Models
+vit-bert-pretrained/*
