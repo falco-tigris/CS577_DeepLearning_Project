@@ -117,12 +117,11 @@ class ReportNet(nn.Module):
             dropout_p=dropout_p,
         )
 
-    def forward(self, image1, report):
+    def forward(self, image1, report, tgt_mask):
         # Extract features from images using CNN
         image1_features = self.encoder(image1)
         image1_features = image1_features.unsqueeze(0)
-        # Pass the image features and text through the transformer
-        tgt_mask = self.get_tgt_mask(len(report))
+
         # Generate the report
         transformer_output = self.decoder(report, tgt_mask, image1_features)
         return transformer_output

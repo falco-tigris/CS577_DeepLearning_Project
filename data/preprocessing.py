@@ -74,7 +74,7 @@ class WordTokenizer():
         return self.unk_token
 
 class ChestXrayDataset(Dataset):
-    def __init__(self, uids, img_folder, pad_token=PAD_TOKEN, max_length=60, from_pretrained= False, transform=None):
+    def __init__(self, uids, img_folder, pad_token=PAD_TOKEN, max_length=30, from_pretrained= False, transform=None):
         self.uids = uids
         self.transform = transform
         self.pad_token = pad_token
