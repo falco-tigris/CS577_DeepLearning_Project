@@ -5,6 +5,7 @@ data/*
 
 /__pycache__
 /models/__pycache__
+/tokenizer/__pycache__
 
 # Models
 vit-bert-pretrained/*
